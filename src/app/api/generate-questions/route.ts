@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import ZAI from 'z-ai-web-dev-sdk'
+import { validateQuestionQuality } from '@/lib/ai-host'
 
 interface QuestionRequest {
   categories: string[]
@@ -20,6 +21,11 @@ interface Question {
   acceptableAnswers: string[]
   explanation: string
   hint?: string
+  validation?: {
+    pass: boolean
+    fail_reasons?: string[]
+  }
+  readingLevel?: string
 }
 
 const QUESTION_TEMPLATES = {
@@ -230,7 +236,7 @@ async function generateQuestion(
     console.log(`📋 Using template question for ${category} ${difficulty}`)
     const template = templateQuestions[Math.floor(Math.random() * templateQuestions.length)]
     
-    return {
+    const question: Question = {
       id: crypto.randomUUID(),
       number,
       category,
@@ -241,17 +247,33 @@ async function generateQuestion(
       correctAnswer: template.correct,
       acceptableAnswers: [template.correct.toLowerCase()],
       explanation: template.explanation,
-      hint: template.hint
+      hint: template.hint,
+      readingLevel: getReadingLevel(difficulty)
     }
+    
+    // Validate question quality
+    const validation = validateQuestionQuality(question)
+    question.validation = {
+      pass: validation.pass,
+      fail_reasons: validation.reasons
+    }
+    
+    return question
   }
 
   console.log(`🤖 No template found for ${category} ${difficulty}, using AI generation`)
   
-  // If no template available, use AI to generate
-  try {
-    const zai = await ZAI.create()
+  // If no template available, use AI to generate (with retry logic)
+  let attempts = 0
+  const maxAttempts = 3
+  
+  while (attempts < maxAttempts) {
+    attempts++
     
-    const prompt = `Generate a family-friendly trivia question with the following specifications:
+    try {
+      const zai = await ZAI.create()
+      
+      const prompt = `Generate a family-friendly trivia question with the following specifications:
     - Category: ${category}
     - Difficulty: ${difficulty}
     - Mode: ${mode}
@@ -260,12 +282,13 @@ async function generateQuestion(
     The question must be:
     1. Factually accurate and commonly known
     2. Family-friendly and appropriate for all ages
-    3. Clear and unambiguous
+    3. Clear and unambiguous with no double negatives
     4. Engaging and interesting
+    5. Reading level: ${getReadingLevel(difficulty)}
     
-    ${mode === 'MC' ? 'Provide 4 multiple choice options (A, B, C, D) with one clearly correct answer and 3 plausible but incorrect distractors.' : ''}
+    ${mode === 'MC' ? 'Provide 4 multiple choice options (A, B, C, D) with one clearly correct answer and 3 plausible but incorrect distractors. DO NOT use "All of the above" or "None of the above".' : ''}
     ${mode === 'Open' ? 'Provide an open-ended question with a clear, specific answer.' : ''}
-    ${mode === 'Hybrid' ? 'Provide an open-ended question that can also work as multiple choice if needed.' : ''}
+    ${mode === 'Hybrid' ? 'Provide an open-ended question that can also work as multiple choice if needed. Include MC options.' : ''}
     
     Also provide:
     - A brief, clear explanation of the correct answer
@@ -314,7 +337,7 @@ async function generateQuestion(
     
     const aiQuestion = JSON.parse(cleanedContent)
     
-    return {
+    const generatedQuestion: Question = {
       id: crypto.randomUUID(),
       number,
       category,
@@ -325,19 +348,39 @@ async function generateQuestion(
       correctAnswer: aiQuestion.correctAnswer,
       acceptableAnswers: aiQuestion.acceptableAnswers || [aiQuestion.correctAnswer.toLowerCase()],
       explanation: aiQuestion.explanation,
-      hint: aiQuestion.hint
+      hint: aiQuestion.hint,
+      readingLevel: getReadingLevel(difficulty)
     }
-  } catch (error) {
-    console.error('Error generating AI question:', error)
     
-    // Fallback to a simple default question
+    // Validate the generated question
+    const validation = validateQuestionQuality(generatedQuestion)
+    generatedQuestion.validation = {
+      pass: validation.pass,
+      fail_reasons: validation.reasons
+    }
+    
+    // If validation fails and we have attempts left, retry
+    if (!validation.pass && attempts < maxAttempts) {
+      console.log(`⚠️ Validation failed (attempt ${attempts}/${maxAttempts}): ${validation.reasons.join(', ')}`)
+      continue
+    }
+    
+    return generatedQuestion
+  } catch (error) {
+    console.error(`Error generating AI question (attempt ${attempts}/${maxAttempts}):`, error)
+    
+    if (attempts < maxAttempts) {
+      continue
+    }
+    
+    // Final fallback to a simple default question
     return {
       id: crypto.randomUUID(),
       number,
       category,
       difficulty,
       mode,
-      question: `What is the capital of ${category}?`,
+      question: `What is a key concept in ${category}?`,
       choices: mode === 'Open' ? undefined : {
         A: "Option A",
         B: "Option B", 
@@ -347,7 +390,29 @@ async function generateQuestion(
       correctAnswer: mode === 'MC' ? "A" : "Answer",
       acceptableAnswers: ["answer"],
       explanation: "This is a fallback question due to generation issues.",
-      hint: "Think about the most famous city in this context."
+      hint: "Think about the most important ideas in this subject.",
+      validation: {
+        pass: false,
+        fail_reasons: ["Fallback question due to generation failure"]
+      },
+      readingLevel: getReadingLevel(difficulty)
     }
+  }
+  }
+  
+  // This should never be reached, but TypeScript needs it
+  throw new Error('Failed to generate question after all attempts')
+}
+
+function getReadingLevel(difficulty: 'Easy' | 'Medium' | 'Hard'): string {
+  switch (difficulty) {
+    case 'Easy':
+      return 'Grade 6 or below'
+    case 'Medium':
+      return 'Grade 8 or below'
+    case 'Hard':
+      return 'Grade 10 or below'
+    default:
+      return 'Grade 8 or below'
   }
 }

@@ -1,11 +1,15 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGameStore } from '@/lib/store'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Trophy, Medal, Star, RotateCcw, Sparkles, Target, Zap } from 'lucide-react'
+import { Trophy, Medal, Star, RotateCcw, Sparkles, Target, Zap, Award, TrendingUp } from 'lucide-react'
+import { HostMessage } from '@/components/ui/host-message'
+import { PhaseChecklist } from '@/components/ui/phase-checklist'
+import { TRIVIA_CONFIG } from '@/lib/config'
+import { getSuperlativeMessage } from '@/lib/ai-host'
 
 interface Superlative {
   key: string
@@ -16,8 +20,63 @@ interface Superlative {
 }
 
 export function ConclusionPhase() {
-  const { players, gameHistory, resetGame } = useGameStore()
+  const { 
+    players, 
+    gameHistory, 
+    resetGame,
+    settings,
+    updateChecklist,
+    completeChecklistItem,
+    phaseChecklist
+  } = useGameStore()
   const [showSuperlatives, setShowSuperlatives] = useState(false)
+  const [hostMessage, setHostMessage] = useState('')
+  const [needsTieBreaker, setNeedsTieBreaker] = useState(false)
+  
+  // Initialize checklist
+  useEffect(() => {
+    updateChecklist('conclusion', TRIVIA_CONFIG.phases.conclusion.checklist)
+    completeChecklistItem(0) // Tally scores
+    loadHostWrapUp()
+  }, [])
+  
+  // Check for ties
+  useEffect(() => {
+    const sortedPlayers = [...players].sort((a, b) => b.score - a.score)
+    const hasTie = sortedPlayers.length > 1 && sortedPlayers[0].score === sortedPlayers[1].score
+    setNeedsTieBreaker(hasTie)
+    if (!hasTie) {
+      completeChecklistItem(1) // Announce winner
+    }
+  }, [players])
+  
+  const loadHostWrapUp = async () => {
+    try {
+      const response = await fetch('/api/ai-host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            phase: 'conclusion',
+            players,
+          },
+          messageType: 'conclusion'
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setHostMessage(data.message)
+      } else {
+        const winner = [...players].sort((a, b) => b.score - a.score)[0]
+        setHostMessage(`🏆 Congratulations ${winner.name}! Thanks everyone for playing Family Trivia Night! 🎉`)
+      }
+    } catch (error) {
+      console.error('Failed to load host wrap-up:', error)
+      const winner = [...players].sort((a, b) => b.score - a.score)[0]
+      setHostMessage(`🏆 Congratulations ${winner.name}! Thanks everyone for playing Family Trivia Night! 🎉`)
+    }
+  }
 
   const sortedPlayers = [...players].sort((a, b) => b.score - a.score)
   const winner = sortedPlayers[0]
@@ -25,32 +84,38 @@ export function ConclusionPhase() {
 
   const calculateSuperlatives = (): Superlative[] => {
     const superlatives: Superlative[] = []
+    
+    if (players.length === 0) return superlatives
 
     // Sharpshooter (Most Accurate)
-    const mostAccurate = players.reduce((prev, current) => {
-      const prevRate = prev.totalAnswers > 0 ? prev.correctAnswers / prev.totalAnswers : 0
-      const currentRate = current.totalAnswers > 0 ? current.correctAnswers / current.totalAnswers : 0
-      return currentRate > prevRate ? current : prev
-    })
-    superlatives.push({
-      key: 'most_accurate',
-      label: 'Sharpshooter',
-      icon: <Target className="w-5 h-5 text-blue-500" />,
-      winner: mostAccurate.name,
-      description: `Highest accuracy rate (${Math.round((mostAccurate.correctAnswers / mostAccurate.totalAnswers) * 100)}%)`
-    })
+    const playersWithAnswers = players.filter(p => p.totalAnswers > 0)
+    if (playersWithAnswers.length > 0) {
+      const mostAccurate = playersWithAnswers.reduce((prev, current) => {
+        const prevRate = prev.correctAnswers / prev.totalAnswers
+        const currentRate = current.correctAnswers / current.totalAnswers
+        return currentRate > prevRate ? current : prev
+      })
+      const accuracy = Math.round((mostAccurate.correctAnswers / mostAccurate.totalAnswers) * 100)
+      superlatives.push({
+        key: 'most_accurate',
+        label: 'Sharpshooter',
+        icon: <Target className="w-5 h-5 text-blue-500" />,
+        winner: mostAccurate.name,
+        description: `Highest accuracy rate (${accuracy}%)`
+      })
+    }
 
     // On a Roll (Longest Streak)
-    const longestStreak = players.reduce((prev, current) => 
-      current.streak > prev.streak ? current : prev
+    const longestStreakPlayer = players.reduce((prev, current) => 
+      current.maxStreak > prev.maxStreak ? current : prev
     )
-    if (longestStreak.streak >= 3) {
+    if (longestStreakPlayer.maxStreak >= 3) {
       superlatives.push({
         key: 'longest_streak',
         label: 'On a Roll',
         icon: <Zap className="w-5 h-5 text-yellow-500" />,
-        winner: longestStreak.name,
-        description: `Longest streak of ${longestStreak.streak} correct answers`
+        winner: longestStreakPlayer.name,
+        description: `Longest streak of ${longestStreakPlayer.maxStreak} correct answers`
       })
     }
 
@@ -67,8 +132,71 @@ export function ConclusionPhase() {
         label: 'Hint Ninja',
         icon: <Star className="w-5 h-5 text-purple-500" />,
         winner: hintNinja.name,
-        description: `Used the fewest hints per correct answer`
+        description: `Used the fewest hints per correct answer (${hintNinja.hintsUsed} hints for ${hintNinja.correctAnswers} correct)`
       })
+    }
+    
+    // Category Ace (Best in top category)
+    if (playersWithAnswers.length > 0) {
+      const categoryPerformances: Record<string, { player: string; rate: number }> = {}
+      
+      playersWithAnswers.forEach(player => {
+        Object.entries(player.categoryPerformance).forEach(([category, stats]) => {
+          if (stats.total > 0) {
+            const rate = stats.correct / stats.total
+            if (!categoryPerformances[category] || rate > categoryPerformances[category].rate) {
+              categoryPerformances[category] = { player: player.name, rate }
+            }
+          }
+        })
+      })
+      
+      const categories = Object.entries(categoryPerformances)
+      if (categories.length > 0) {
+        const topCategory = categories.sort((a, b) => b[1].rate - a[1].rate)[0]
+        superlatives.push({
+          key: 'category_ace',
+          label: 'Category Ace',
+          icon: <Award className="w-5 h-5 text-green-500" />,
+          winner: topCategory[1].player,
+          description: `Best performance in ${topCategory[0]} (${Math.round(topCategory[1].rate * 100)}%)`
+        })
+      }
+    }
+    
+    // Comeback Kid (largest late-round improvement)
+    if (gameHistory.length >= 6) {
+      const firstHalfEnd = Math.floor(gameHistory.length / 2)
+      const playerImprovements = players.map(player => {
+        const firstHalf = gameHistory.slice(0, firstHalfEnd).filter(h => h.playerId === player.id)
+        const secondHalf = gameHistory.slice(firstHalfEnd).filter(h => h.playerId === player.id)
+        
+        const firstHalfRate = firstHalf.length > 0 
+          ? firstHalf.filter(h => h.correct).length / firstHalf.length 
+          : 0
+        const secondHalfRate = secondHalf.length > 0 
+          ? secondHalf.filter(h => h.correct).length / secondHalf.length 
+          : 0
+        
+        return {
+          player,
+          improvement: secondHalfRate - firstHalfRate
+        }
+      })
+      
+      const comebackKid = playerImprovements.reduce((prev, current) => 
+        current.improvement > prev.improvement ? current : prev
+      )
+      
+      if (comebackKid.improvement > 0.2) {
+        superlatives.push({
+          key: 'comeback_kid',
+          label: 'Comeback Kid',
+          icon: <TrendingUp className="w-5 h-5 text-orange-500" />,
+          winner: comebackKid.player.name,
+          description: `Impressive improvement in the second half!`
+        })
+      }
     }
 
     return superlatives
@@ -78,6 +206,13 @@ export function ConclusionPhase() {
 
   const handlePlayAgain = () => {
     resetGame()
+  }
+  
+  const handleSuperlatives = () => {
+    if (!showSuperlatives) {
+      completeChecklistItem(2) // Award superlatives
+    }
+    setShowSuperlatives(!showSuperlatives)
   }
 
   return (
@@ -94,6 +229,41 @@ export function ConclusionPhase() {
           Time for final scores and celebrations! 🎉
         </p>
       </div>
+
+      {/* Host Wrap-Up Message */}
+      {hostMessage && (
+        <div className="mb-6">
+          <HostMessage message={hostMessage} tone="celebration" />
+        </div>
+      )}
+
+      {/* Checklist */}
+      {phaseChecklist && phaseChecklist.phase === 'conclusion' && (
+        <div className="mb-6">
+          <PhaseChecklist
+            title="Conclusion Progress"
+            items={phaseChecklist.items}
+            completed={phaseChecklist.completed}
+          />
+        </div>
+      )}
+
+      {/* Tie-Breaker Warning */}
+      {needsTieBreaker && (
+        <Card className="mb-6 border-2 border-blue-200 bg-gradient-to-r from-blue-50 to-cyan-50">
+          <CardContent className="p-6">
+            <div className="flex items-center gap-3 mb-3">
+              <Trophy className="w-6 h-6 text-blue-600" />
+              <h3 className="font-bold text-lg text-blue-900">It's a Tie!</h3>
+            </div>
+            <p className="text-blue-800 mb-4">
+              We have multiple players tied for first place! According to the rules, 
+              tie-breaker method is: <strong>{settings.tieBreaker}</strong>
+            </p>
+            <Badge className="bg-blue-500">Tie-breaker needed</Badge>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Final Scores */}
       <Card className="mb-6">
@@ -236,7 +406,7 @@ export function ConclusionPhase() {
             <Button
               variant="outline"
               size="lg"
-              onClick={() => setShowSuperlatives(!showSuperlatives)}
+              onClick={handleSuperlatives}
               className="px-8 py-3 font-semibold"
             >
               <Sparkles className="w-5 h-5 mr-2" />
