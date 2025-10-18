@@ -7,7 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { ArrowRight, Lightbulb, SkipForward, Trophy, Target, Clock } from 'lucide-react'
+import { ArrowRight, Lightbulb, SkipForward, Trophy, Target, TrendingUp, TrendingDown } from 'lucide-react'
+import { HostMessage } from '@/components/ui/host-message'
+import { PhaseChecklist } from '@/components/ui/phase-checklist'
+import { TRIVIA_CONFIG } from '@/lib/config'
+import { formatLeaderboard } from '@/lib/ai-host'
+import { analyzeDifficulty, getDifficultyAdjustmentMessage } from '@/lib/difficulty-adjuster'
 
 export function GameplayPhase() {
   const {
@@ -17,6 +22,7 @@ export function GameplayPhase() {
     currentQuestionIndex,
     currentQuestion,
     showHint,
+    convertedToMC,
     gameHistory,
     submitAnswer,
     requestHint,
@@ -25,13 +31,28 @@ export function GameplayPhase() {
     setProcessing,
     setQuestions,
     isProcessing,
-    phase
+    phase,
+    updateChecklist,
+    completeChecklistItem,
+    phaseChecklist,
+    dynamicDifficulty,
+    adjustDifficulty,
+    showLeaderboard,
+    setShowLeaderboard,
+    convertToMC
   } = useGameStore()
 
   const [selectedAnswer, setSelectedAnswer] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState('')
   const [showResult, setShowResult] = useState(false)
-  const [answerResult, setAnswerResult] = useState<{ correct: boolean; points: number; explanation: string } | null>(null)
+  const [answerResult, setAnswerResult] = useState<{ 
+    correct: boolean
+    partial: boolean
+    points: number
+    explanation: string 
+  } | null>(null)
+  const [hostMessage, setHostMessage] = useState('')
+  const [difficultyMessage, setDifficultyMessage] = useState('')
 
   // Initialize with first player
   useEffect(() => {
@@ -47,15 +68,43 @@ export function GameplayPhase() {
     }
   }, [phase, questions.length, settings.categories.length])
 
+  // Initialize gameplay checklist
+  useEffect(() => {
+    if (phase === 'gameplay' && !phaseChecklist) {
+      updateChecklist('gameplay', TRIVIA_CONFIG.phases.gameplay.checklist)
+    }
+  }, [phase])
+
+  // Check for dynamic difficulty adjustment
+  useEffect(() => {
+    if (players.length > 0 && currentQuestionIndex > 0 && currentQuestionIndex % 3 === 0) {
+      const analysis = analyzeDifficulty(players, dynamicDifficulty)
+      if (analysis.shouldAdjust) {
+        const message = getDifficultyAdjustmentMessage(
+          analysis.currentDifficulty,
+          analysis.suggestedDifficulty,
+          analysis.reason
+        )
+        setDifficultyMessage(message)
+        adjustDifficulty()
+        
+        // Clear message after 5 seconds
+        setTimeout(() => setDifficultyMessage(''), 5000)
+      }
+    }
+  }, [currentQuestionIndex])
+
   const generateQuestions = async () => {
     setProcessing(true)
+    completeChecklistItem(0) // Generate and validate
+    
     try {
       const response = await fetch('/api/generate-questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           categories: settings.categories,
-          difficulty: settings.difficulty,
+          difficulty: dynamicDifficulty,
           mode: settings.mode,
           count: settings.questionCount
         })
@@ -64,13 +113,12 @@ export function GameplayPhase() {
       if (response.ok) {
         const generatedQuestions = await response.json()
         setQuestions(generatedQuestions)
+        completeChecklistItem(1) // Present question
       } else {
-        console.error('API response not ok:', response.status, response.statusText)
         throw new Error(`API responded with status: ${response.status}`)
       }
     } catch (error) {
       console.error('Failed to generate questions:', error)
-      // Fallback to mock questions
       const mockQuestions = generateMockQuestions()
       setQuestions(mockQuestions)
     } finally {
@@ -79,7 +127,6 @@ export function GameplayPhase() {
   }
 
   const generateMockQuestions = () => {
-    // Mock questions for development
     return [
       {
         id: '1',
@@ -95,167 +142,32 @@ export function GameplayPhase() {
           D: 'Hydrogen'
         },
         correctAnswer: 'B',
-        acceptableAnswers: ['carbon dioxide', 'co2'],
+        acceptableAnswers: ['carbon dioxide', 'co2', 'b'],
         explanation: 'Plants absorb carbon dioxide from the air and use sunlight to convert it into oxygen and glucose through photosynthesis.',
         hint: 'Think about what humans breathe out that plants need!'
-      },
-      {
-        id: '2',
-        number: 2,
-        category: 'Geography',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'What is the capital of France?',
-        choices: {
-          A: 'London',
-          B: 'Berlin',
-          C: 'Paris',
-          D: 'Madrid'
-        },
-        correctAnswer: 'C',
-        acceptableAnswers: ['paris'],
-        explanation: 'Paris has been the capital of France since 987 AD and is known for the Eiffel Tower.',
-        hint: 'This city is famous for the Eiffel Tower!'
-      },
-      {
-        id: '3',
-        number: 3,
-        category: 'History',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'Who was the first President of the United States?',
-        choices: {
-          A: 'Thomas Jefferson',
-          B: 'George Washington',
-          C: 'Abraham Lincoln',
-          D: 'John Adams'
-        },
-        correctAnswer: 'B',
-        acceptableAnswers: ['george washington', 'washington'],
-        explanation: 'George Washington served as the first President of the United States from 1789 to 1797.',
-        hint: 'His face is on the one-dollar bill!'
-      },
-      {
-        id: '4',
-        number: 4,
-        category: 'Animals',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'What is the largest mammal in the world?',
-        choices: {
-          A: 'African Elephant',
-          B: 'Blue Whale',
-          C: 'Giraffe',
-          D: 'Polar Bear'
-        },
-        correctAnswer: 'B',
-        acceptableAnswers: ['blue whale', 'whale'],
-        explanation: 'The blue whale is the largest mammal ever known to have lived on Earth, reaching lengths of up to 100 feet.',
-        hint: 'This mammal lives in the ocean!'
-      },
-      {
-        id: '5',
-        number: 5,
-        category: 'Movies & TV',
-        difficulty: 'Medium' as const,
-        mode: 'MC' as const,
-        question: 'In the movie "The Lion King", who is Simba\'s father?',
-        choices: {
-          A: 'Scar',
-          B: 'Mufasa',
-          C: 'Timon',
-          D: 'Rafiki'
-        },
-        correctAnswer: 'B',
-        acceptableAnswers: ['mufasa'],
-        explanation: 'Mufasa is Simba\'s father and the king of the Pride Lands until his tragic death.',
-        hint: 'His name starts with M and he\'s a noble king!'
-      },
-      {
-        id: '6',
-        number: 6,
-        category: 'Music',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'How many strings does a standard guitar have?',
-        choices: {
-          A: '4',
-          B: '5',
-          C: '6',
-          D: '7'
-        },
-        correctAnswer: 'C',
-        acceptableAnswers: ['six', '6'],
-        explanation: 'A standard guitar has 6 strings, typically tuned to E-A-D-G-B-E from lowest to highest pitch.',
-        hint: 'It\'s more than 5 but less than 7!'
-      },
-      {
-        id: '7',
-        number: 7,
-        category: 'Sports',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'How many players are on a basketball team on the court at one time?',
-        choices: {
-          A: '4',
-          B: '5',
-          C: '6',
-          D: '7'
-        },
-        correctAnswer: 'B',
-        acceptableAnswers: ['five', '5'],
-        explanation: 'Each basketball team has 5 players on the court during gameplay.',
-        hint: 'It\'s the same as the number of fingers on one hand!'
-      },
-      {
-        id: '8',
-        number: 8,
-        category: 'Space',
-        difficulty: 'Medium' as const,
-        mode: 'MC' as const,
-        question: 'Which planet is known as the "Red Planet"?',
-        choices: {
-          A: 'Venus',
-          B: 'Mars',
-          C: 'Jupiter',
-          D: 'Saturn'
-        },
-        correctAnswer: 'B',
-        acceptableAnswers: ['mars'],
-        explanation: 'Mars is called the "Red Planet" because of iron oxide (rust) on its surface gives it a reddish appearance.',
-        hint: 'This planet is named after the Roman god of war!'
-      },
-      {
-        id: '9',
-        number: 9,
-        category: 'General Knowledge',
-        difficulty: 'Easy' as const,
-        mode: 'MC' as const,
-        question: 'What is the largest ocean on Earth?',
-        choices: {
-          A: 'Atlantic Ocean',
-          B: 'Indian Ocean',
-          C: 'Arctic Ocean',
-          D: 'Pacific Ocean'
-        },
-        correctAnswer: 'D',
-        acceptableAnswers: ['pacific ocean', 'pacific'],
-        explanation: 'The Pacific Ocean is the largest and deepest of the world\'s oceans, covering about 63 million square miles.',
-        hint: 'This ocean shares its name with peacefulness!'
       }
     ]
   }
 
-  const handleSubmitAnswer = () => {
+  const handleSubmitAnswer = async () => {
     if (!selectedAnswer.trim() || !selectedPlayer || !currentQuestion || showResult) return
+
+    completeChecklistItem(2) // Accept answer
 
     const player = players.find(p => p.id === selectedPlayer)
     if (!player) return
 
     submitAnswer(selectedPlayer, selectedAnswer)
     
-    // Calculate result
-    const isCorrect = selectedAnswer.toUpperCase() === currentQuestion.correctAnswer.toUpperCase()
+    // Get the evaluation from game history
+    const lastEntry = gameHistory[gameHistory.length - 1]
+    
+    // Calculate result (simplified - actual logic is in store)
+    const normalizedAnswer = selectedAnswer.toLowerCase().trim()
+    const isCorrect = currentQuestion.mode === 'MC' 
+      ? normalizedAnswer === currentQuestion.correctAnswer.toLowerCase()
+      : currentQuestion.acceptableAnswers.some(a => a.toLowerCase() === normalizedAnswer)
+    
     const basePoints = currentQuestion.difficulty === 'Easy' ? 100 : currentQuestion.difficulty === 'Medium' ? 150 : 200
     const hintPenalty = showHint ? Math.floor(basePoints * 0.25) : 0
     const streakBonus = player.streak >= 3 ? 20 : 0
@@ -263,20 +175,75 @@ export function GameplayPhase() {
 
     setAnswerResult({
       correct: isCorrect,
+      partial: false,
       points,
       explanation: currentQuestion.explanation
     })
     setShowResult(true)
+    completeChecklistItem(3) // Evaluate response
+    completeChecklistItem(4) // Reveal explanation
+
+    // Load AI feedback
+    loadHostFeedback(isCorrect, player.name)
+  }
+
+  const loadHostFeedback = async (correct: boolean, playerName: string) => {
+    try {
+      const messageType = correct ? 'correct_feedback' : 'incorrect_feedback'
+      const response = await fetch('/api/ai-host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            phase: 'gameplay',
+            players,
+            currentQuestion,
+            questionNumber: currentQuestionIndex + 1,
+            totalQuestions: questions.length,
+            recentHistory: [{ correct, playerName }]
+          },
+          messageType
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setHostMessage(data.message)
+      }
+    } catch (error) {
+      console.error('Failed to load host feedback:', error)
+    }
   }
 
   const handleNext = () => {
     setShowResult(false)
     setSelectedAnswer('')
     setAnswerResult(null)
+    setHostMessage('')
     nextQuestion()
+    
+    // Reset checklist for next question
+    updateChecklist('gameplay', TRIVIA_CONFIG.phases.gameplay.checklist)
+  }
+
+  const handleRequestHint = () => {
+    if (settings.mode === 'Hybrid' && !convertedToMC) {
+      // For Hybrid mode, convert to MC after hint request
+      convertToMC()
+    }
+    requestHint()
+  }
+
+  const handleSkip = () => {
+    skipQuestion()
+    setShowResult(false)
+    setSelectedAnswer('')
+    setAnswerResult(null)
+    setHostMessage('')
   }
 
   const progress = ((currentQuestionIndex + 1) / questions.length) * 100
+  const currentMode = (currentQuestion?.mode === 'Hybrid' && (showHint || convertedToMC)) ? 'MC' : currentQuestion?.mode
 
   if (isProcessing) {
     return (
@@ -306,12 +273,67 @@ export function GameplayPhase() {
       <div className="mb-6">
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold text-gray-800">Let's begin!</h1>
-          <Badge variant="outline" className="text-sm">
-            Question {currentQuestionIndex + 1} of {questions.length}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-sm">
+              Question {currentQuestionIndex + 1} of {questions.length}
+            </Badge>
+            {dynamicDifficulty !== settings.difficulty && (
+              <Badge className="text-sm bg-purple-500">
+                {dynamicDifficulty}
+                {dynamicDifficulty > settings.difficulty ? 
+                  <TrendingUp className="w-3 h-3 ml-1" /> : 
+                  <TrendingDown className="w-3 h-3 ml-1" />
+                }
+              </Badge>
+            )}
+          </div>
         </div>
         <Progress value={progress} className="h-2" />
       </div>
+
+      {/* Checklist */}
+      {phaseChecklist && phaseChecklist.phase === 'gameplay' && (
+        <div className="mb-4">
+          <PhaseChecklist
+            title="Question Progress"
+            items={phaseChecklist.items}
+            completed={phaseChecklist.completed}
+          />
+        </div>
+      )}
+
+      {/* Difficulty Adjustment Message */}
+      {difficultyMessage && (
+        <div className="mb-4">
+          <HostMessage message={difficultyMessage} tone="encouragement" />
+        </div>
+      )}
+
+      {/* Leaderboard Modal */}
+      {showLeaderboard && (
+        <div className="mb-6">
+          <Card className="border-2 border-yellow-200 bg-gradient-to-r from-yellow-50 to-orange-50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Trophy className="w-6 h-6 text-yellow-500" />
+                Leaderboard Check!
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="whitespace-pre-wrap text-sm">
+                {formatLeaderboard(players, currentQuestionIndex)}
+              </div>
+              <Button
+                onClick={() => setShowLeaderboard(false)}
+                className="mt-4"
+                size="sm"
+              >
+                Continue
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Question Card */}
       <Card className="mb-6">
@@ -321,15 +343,20 @@ export function GameplayPhase() {
               <Target className="w-5 h-5 text-purple-600" />
               Q#{currentQuestion.number} — {currentQuestion.category} ({currentQuestion.difficulty})
             </CardTitle>
-            <Badge variant={currentQuestion.difficulty === 'Easy' ? 'secondary' : currentQuestion.difficulty === 'Medium' ? 'default' : 'destructive'}>
+            <Badge variant={
+              currentQuestion.difficulty === 'Easy' ? 'secondary' : 
+              currentQuestion.difficulty === 'Medium' ? 'default' : 
+              'destructive'
+            }>
               {currentQuestion.difficulty}
             </Badge>
           </div>
         </CardHeader>
         <CardContent>
-          <div className="text-lg mb-6">{currentQuestion.question}</div>
+          <div className="text-lg mb-6 font-medium">{currentQuestion.question}</div>
           
-          {currentQuestion.mode === 'MC' && currentQuestion.choices && (
+          {/* MC Mode or Converted Hybrid */}
+          {currentMode === 'MC' && currentQuestion.choices && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {Object.entries(currentQuestion.choices).map(([key, value]) => (
                 <Button
@@ -345,40 +372,16 @@ export function GameplayPhase() {
             </div>
           )}
 
-          {currentQuestion.mode === 'Open' && (
+          {/* Open Mode */}
+          {currentMode === 'Open' && (
             <Input
               placeholder="Type your answer here..."
               value={selectedAnswer}
               onChange={(e) => setSelectedAnswer(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSubmitAnswer()}
               disabled={showResult}
+              className="text-lg"
             />
-          )}
-
-          {currentQuestion.mode === 'Hybrid' && !showHint && !showResult && (
-            <Input
-              placeholder="Type your answer here..."
-              value={selectedAnswer}
-              onChange={(e) => setSelectedAnswer(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSubmitAnswer()}
-              disabled={showResult}
-            />
-          )}
-
-          {currentQuestion.mode === 'Hybrid' && (showHint || showResult) && currentQuestion.choices && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {Object.entries(currentQuestion.choices).map(([key, value]) => (
-                <Button
-                  key={key}
-                  variant={selectedAnswer === key ? 'default' : 'outline'}
-                  className="justify-start h-auto p-4 text-left"
-                  onClick={() => setSelectedAnswer(key)}
-                  disabled={showResult}
-                >
-                  <span className="font-semibold mr-2">{key})</span> {value}
-                </Button>
-              ))}
-            </div>
           )}
 
           {/* Hint */}
@@ -392,21 +395,41 @@ export function GameplayPhase() {
             </div>
           )}
 
+          {/* Host Feedback */}
+          {hostMessage && showResult && (
+            <div className="mt-4">
+              <HostMessage 
+                message={hostMessage} 
+                tone={answerResult?.correct ? 'celebration' : 'encouragement'} 
+              />
+            </div>
+          )}
+
           {/* Result */}
           {showResult && answerResult && (
             <div className={`mt-4 p-4 rounded-lg border ${
               answerResult.correct 
                 ? 'bg-green-50 border-green-200' 
+                : answerResult.partial
+                ? 'bg-yellow-50 border-yellow-200'
                 : 'bg-red-50 border-red-200'
             }`}>
               <div className="flex items-center gap-2 mb-2">
                 {answerResult.correct ? (
                   <span className="text-green-800 font-medium">✅ Correct!</span>
+                ) : answerResult.partial ? (
+                  <span className="text-yellow-800 font-medium">🟨 So Close!</span>
                 ) : (
                   <span className="text-red-800 font-medium">❌ Not quite.</span>
                 )}
                 <span className="text-gray-600">+{answerResult.points} points</span>
               </div>
+              <p className="text-gray-700 font-medium mb-1">
+                {currentQuestion.mode === 'MC' 
+                  ? `Correct answer: ${currentQuestion.correctAnswer}` 
+                  : `Correct answer: ${currentQuestion.acceptableAnswers[0]}`
+                }
+              </p>
               <p className="text-gray-700">{answerResult.explanation}</p>
             </div>
           )}
@@ -444,7 +467,7 @@ export function GameplayPhase() {
             {settings.hintsEnabled && !showHint && (
               <Button
                 variant="outline"
-                onClick={requestHint}
+                onClick={handleRequestHint}
                 className="flex items-center gap-2"
               >
                 <Lightbulb className="w-4 h-4" />
@@ -454,14 +477,14 @@ export function GameplayPhase() {
             <Button
               onClick={handleSubmitAnswer}
               disabled={!selectedAnswer.trim() || !selectedPlayer}
-              className="flex items-center gap-2"
+              className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700"
             >
               Submit Answer
               <ArrowRight className="w-4 h-4" />
             </Button>
             <Button
               variant="outline"
-              onClick={skipQuestion}
+              onClick={handleSkip}
               className="flex items-center gap-2"
             >
               <SkipForward className="w-4 h-4" />
@@ -471,7 +494,7 @@ export function GameplayPhase() {
         ) : (
           <Button
             onClick={handleNext}
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700"
           >
             Next Question
             <ArrowRight className="w-4 h-4" />

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useGameStore } from '@/lib/store'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,6 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 import { UserPlus, Users, Settings, Play, Sparkles } from 'lucide-react'
+import { HostMessage } from '@/components/ui/host-message'
+import { PhaseChecklist } from '@/components/ui/phase-checklist'
+import { TRIVIA_CONFIG } from '@/lib/config'
 
 const CATEGORIES = [
   'Science', 'History', 'Geography', 'Sports', 'Animals', 
@@ -27,12 +30,72 @@ export function SetupPhase() {
     addPlayer, 
     removePlayer, 
     updateSettings, 
-    startGame 
+    startGame,
+    updateChecklist,
+    completeChecklistItem,
+    phaseChecklist
   } = useGameStore()
   
   const [newPlayerName, setNewPlayerName] = useState('')
   const [newPlayerAge, setNewPlayerAge] = useState('')
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['General Knowledge'])
+  const [hostGreeting, setHostGreeting] = useState('')
+  const [isLoadingHost, setIsLoadingHost] = useState(false)
+  
+  // Initialize checklist on mount
+  useEffect(() => {
+    updateChecklist('setup', TRIVIA_CONFIG.phases.setup.checklist)
+    loadHostGreeting()
+  }, [])
+  
+  // Update checklist progress
+  useEffect(() => {
+    if (!phaseChecklist) return
+    
+    // Item 0: Confirm players
+    if (players.length > 0 && !phaseChecklist.completed[0]) {
+      completeChecklistItem(0)
+    }
+    
+    // Item 1: Capture ages and categories
+    if (selectedCategories.length > 0 && !phaseChecklist.completed[1]) {
+      completeChecklistItem(1)
+    }
+    
+    // Item 2: Choose settings
+    if (settings.questionCount > 0 && !phaseChecklist.completed[2]) {
+      completeChecklistItem(2)
+    }
+  }, [players.length, selectedCategories.length, settings])
+  
+  const loadHostGreeting = async () => {
+    setIsLoadingHost(true)
+    try {
+      const response = await fetch('/api/ai-host', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context: {
+            phase: 'setup',
+            players: []
+          },
+          messageType: 'greeting'
+        })
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        setHostGreeting(data.message)
+      } else {
+        setHostGreeting('Welcome to Family Trivia Night! Let\'s get you set up for an amazing trivia adventure! 🎯')
+      }
+    } catch (error) {
+      console.error('Failed to load host greeting:', error)
+      setHostGreeting('Welcome to Family Trivia Night! Let\'s get you set up for an amazing trivia adventure! 🎯')
+    } finally {
+      setIsLoadingHost(false)
+    }
+  }
 
   const handleAddPlayer = () => {
     if (newPlayerName.trim() && newPlayerAge) {
@@ -62,6 +125,14 @@ export function SetupPhase() {
 
   const canStartGame = players.length > 0 && selectedCategories.length > 0
 
+  const handleStartGame = () => {
+    if (phaseChecklist) {
+      completeChecklistItem(3) // Confirm hint policy
+      completeChecklistItem(4) // Summarize plan
+    }
+    startGame()
+  }
+
   return (
     <div className="container mx-auto p-4 max-w-6xl">
       {/* Header */}
@@ -76,6 +147,24 @@ export function SetupPhase() {
           Let's get you set up for an amazing trivia adventure! 🎯
         </p>
       </div>
+
+      {/* Host Greeting */}
+      {hostGreeting && (
+        <div className="mb-6">
+          <HostMessage message={hostGreeting} tone="greeting" />
+        </div>
+      )}
+
+      {/* Checklist */}
+      {phaseChecklist && phaseChecklist.phase === 'setup' && (
+        <div className="mb-6">
+          <PhaseChecklist
+            title="Setup Progress"
+            items={phaseChecklist.items}
+            completed={phaseChecklist.completed}
+          />
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-6">
         {/* Players Section */}
@@ -234,6 +323,7 @@ export function SetupPhase() {
                 value={settings.questionCount}
                 onChange={(e) => updateSettings({ questionCount: parseInt(e.target.value) })}
                 className="w-full"
+                aria-label="Number of questions"
               />
             </div>
 
@@ -303,7 +393,7 @@ export function SetupPhase() {
       <div className="text-center mt-8">
         <Button
           size="lg"
-          onClick={startGame}
+          onClick={handleStartGame}
           disabled={!canStartGame}
           className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-8 py-3 text-lg font-semibold shadow-lg transform transition hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
         >
