@@ -105,3 +105,10 @@ The question generation system:
 - Falls back to AI generation when templates are unavailable
 - Includes robust error handling and fallback mechanisms
 - Maintains family-friendly content standards
+
+## Common Mistakes
+
+- Running `npm run dev` without the custom `server.ts` — Socket.IO real-time features require the custom server, not the default Next.js dev server.
+- Running `npm run db:push` before `npm run db:generate` — Prisma client must be generated first or schema changes silently fail.
+- Modifying game state directly instead of through Zustand store methods in `src/lib/store.ts` — breaks the phase system and scoring logic.
+- Assuming questions come from a remote API at all times — the system silently falls back to templates when the AI SDK is unavailable.
